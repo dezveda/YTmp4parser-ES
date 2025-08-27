@@ -260,21 +260,34 @@ def download_and_process(url: str, video_info: Dict[str, Any], selection: Dict[s
     except Exception as e:
         print(f"\nAn unexpected error occurred during download: {e}", file=sys.stderr)
 
-def main():
-    """Main entry point for the script."""
-    parser = argparse.ArgumentParser(
-        description="Download YouTube videos with a preference for Spanish audio or subtitles.",
-        formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("url", help="The URL of the YouTube video to download.")
-    parser.add_argument("-q", "--quality", help="Optional: Desired video quality (e.g., '1080p', '720p').\nDefaults to best available.", default=None)
-    parser.add_argument("-o", "--output", help="Optional: The output path and filename (e.g., '~/videos/my_video.mp4').\nDefaults to your Desktop.", default=None)
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging.")
-    args = parser.parse_args()
+def interactive_prompt() -> Tuple[str, Optional[str], Optional[str], bool]:
+    """
+    Prompts the user for download details in an interactive session.
+    """
+    youtube_regex = re.compile(r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/|youtube\.com/live/)[\w-]+')
+    url = ""
+    while not url:
+        url_input = input("Enter the YouTube URL: ").strip()
+        if youtube_regex.match(url_input):
+            url = url_input
+        else:
+            print("Invalid YouTube URL. Please try again.")
 
+    quality = input("Enter preferred quality (e.g., 720p, 1080p) [default: 720p]: ").strip() or "720p"
+    output = input("Enter output folder [default: ./downloads]: ").strip() or "./downloads"
+    verbose_input = input("Enable verbose mode? [Y/n]: ").strip().lower()
+    verbose = verbose_input not in ['n', 'no']
+
+    return url, quality, output, verbose
+
+def run_download(url: str, quality: Optional[str], output: Optional[str], verbose: bool):
+    """
+    Core logic to download a video with specified options.
+    """
     # Simple regex to catch obviously invalid URLs before calling the API
     youtube_regex = re.compile(r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/|youtube\.com/live/)[\w-]+')
-    if not youtube_regex.match(args.url):
-        print(f"Error: The provided URL '{args.url}' does not look like a valid YouTube URL.", file=sys.stderr)
+    if not youtube_regex.match(url):
+        print(f"Error: The provided URL '{url}' does not look like a valid YouTube URL.", file=sys.stderr)
         sys.exit(1)
 
     print("--- Verifying Dependencies ---")
@@ -283,12 +296,12 @@ def main():
     print("----------------------------\n")
 
     browsers_to_try = ["chrome", "firefox", "brave", "edge", "opera", "vivaldi", "safari"]
-    video_info, successful_browser = get_video_info_cli(args.url, browsers_to_try, args.verbose)
+    video_info, successful_browser = get_video_info_cli(url, browsers_to_try, verbose)
 
     if not video_info:
         sys.exit(1)
 
-    selection = select_streams(video_info, args.quality)
+    selection = select_streams(video_info, quality)
 
     print("\n--- Download Plan ---")
     if selection["video"]:
@@ -303,7 +316,24 @@ def main():
         print("Subtitle: No Spanish subtitles found.")
     print("---------------------\n")
 
-    download_and_process(args.url, video_info, selection, ffmpeg_path, successful_browser, args.output, args.verbose)
+    download_and_process(url, video_info, selection, ffmpeg_path, successful_browser, output, verbose)
+
+def main():
+    """Main entry point for the script."""
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(
+            description="Download YouTube videos with a preference for Spanish audio or subtitles.",
+            formatter_class=argparse.RawTextHelpFormatter)
+        parser.add_argument("url", help="The URL of the YouTube video to download.")
+        parser.add_argument("-q", "--quality", help="Optional: Desired video quality (e.g., '1080p', '720p').\nDefaults to best available.", default=None)
+        parser.add_argument("-o", "--output", help="Optional: The output path and filename (e.g., '~/videos/my_video.mp4').\nDefaults to your Desktop.", default=None)
+        parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging.")
+        args = parser.parse_args()
+        run_download(args.url, args.quality, args.output, args.verbose)
+    else:
+        print("--- Interactive Mode ---")
+        url, quality, output, verbose = interactive_prompt()
+        run_download(url, quality, output, verbose)
 
 
 if __name__ == "__main__":
