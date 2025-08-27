@@ -105,6 +105,75 @@ def get_ffmpeg_path() -> str:
 
 # --- Core Logic ---
 
+def interactive_select(streams: List[Dict[str, Any]], stream_type: str) -> Optional[str]:
+    """
+    Presenta una lista de pistas al usuario y solicita una selección interactiva.
+
+    Args:
+        streams: Una lista de diccionarios de pistas (formatos o subtítulos).
+        stream_type: El tipo de pista ('audio' o 'subtítulo').
+
+    Returns:
+        El 'format_id' de la pista de audio elegida, el código de idioma del
+        subtítulo elegido, o None si el usuario omite la selección.
+    """
+    if not streams:
+        print(f"No se encontraron pistas de {stream_type}.")
+        return None
+
+    print(f"\n--- Pistas de {stream_type} disponibles ---")
+    if stream_type == "audio":
+        print(f"{'#':>2} | {'ID':<6} | {'Idioma':<8} | {'Codec':<15} | {'Bitrate':<12} | {'Nota'}")
+        print("-" * 80)
+        for i, stream in enumerate(streams, 1):
+            lang = stream.get('language', 'n/a')
+            acodec = stream.get('acodec', 'n/a').replace('mp4a.40.2', 'aac')
+            abr = stream.get('abr', 0)
+            note = stream.get('format_note', '')
+            print(f"{i:>2} | {stream['format_id']:<6} | {lang:<8} | {acodec:<15} | {f'{abr}k':<12} | {note}")
+
+    elif stream_type == "subtítulo":
+        print(f"{'#':>2} | {'Idioma':<8} | {'Formato':<7} | {'Nombre'}")
+        print("-" * 50)
+        for i, stream in enumerate(streams, 1):
+            lang = stream.get('lang_code', 'n/a')
+            ext = stream.get('ext', 'n/a')
+            name = stream.get('name', 'Auto-generado')
+            print(f"{i:>2} | {lang:<8} | {ext:<7} | {name}")
+
+    print("-" * (80 if stream_type == 'audio' else 50))
+
+    while True:
+        try:
+            prompt = f"Elige el número de la pista de {stream_type} (0 para omitir): "
+            choice_str = input(prompt)
+
+            if not choice_str.strip():
+                print("Selección inválida. Por favor, introduce un número.")
+                continue
+
+            choice = int(choice_str)
+
+            if choice == 0:
+                print(f"Se omitirá la descarga de {stream_type}.")
+                return None
+
+            if not (1 <= choice <= len(streams)):
+                raise IndexError
+
+            selected_stream = streams[choice - 1]
+
+            if stream_type == "audio":
+                return selected_stream['format_id']
+            elif stream_type == "subtítulo":
+                return selected_stream['lang_code']
+
+        except ValueError:
+            print("Entrada inválida. Por favor, introduce un número.")
+        except IndexError:
+            print("Número fuera de rango. Por favor, elige un número de la lista.")
+
+
 def get_video_info_cli(url: str, browsers: List[str], verbose: bool) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Fetches video info by calling the yt-dlp CLI.
@@ -144,15 +213,14 @@ def get_video_info_cli(url: str, browsers: List[str], verbose: bool) -> Tuple[Op
 
 def select_streams(video_info: Dict[str, Any], quality: Optional[str] = None) -> Dict[str, Any]:
     """
-    Selects the best video, audio, and subtitle streams from the video info dict.
-    Returns a dictionary with the selected stream objects.
+    Permite al usuario seleccionar interactivamente las pistas de audio y subtítulos,
+    mientras selecciona automáticamente la mejor pista de vídeo.
     """
     formats = video_info.get('formats', [])
-    subtitles = video_info.get('automatic_captions', {})
-    title = video_info.get('title', '')
 
+    # 1. Selección de vídeo (automática)
     video_streams = [f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') == 'none']
-    if not video_streams: # Fallback to merged formats if no video-only
+    if not video_streams: # Fallback a formatos con audio si no hay solo vídeo
         video_streams = [f for f in formats if f.get('vcodec') != 'none']
 
     if quality:
@@ -162,39 +230,52 @@ def select_streams(video_info: Dict[str, Any], quality: Optional[str] = None) ->
             if quality_streams:
                 video_streams = quality_streams
             else:
-                print(f"Warning: Quality '{quality}' not found. Falling back to best available.", file=sys.stderr)
+                print(f"Aviso: Calidad '{quality}' no encontrada. Usando la mejor disponible.", file=sys.stderr)
         except (ValueError, TypeError):
-            print(f"Warning: Invalid quality format '{quality}'. Ignoring.", file=sys.stderr)
+            print(f"Aviso: Formato de calidad '{quality}' inválido. Ignorando.", file=sys.stderr)
 
     video_streams.sort(key=lambda f: (f.get('height', 0), f.get('fps', 0), f.get('tbr', 0)), reverse=True)
     selected_video = video_streams[0] if video_streams else None
 
-    es_audio = [f for f in formats if f.get('acodec') != 'none' and (f.get('language') or '').startswith('es')]
-    es_audio.sort(key=lambda f: f.get('tbr', 0), reverse=True)
-    selected_audio = es_audio[0] if es_audio else None
+    if not selected_video:
+        print("Error fatal: No se encontró ninguna pista de vídeo compatible.", file=sys.stderr)
+        sys.exit(1)
 
-    audio_source_msg = "Found explicitly tagged Spanish audio."
-    if not selected_audio:
-        title_lower = title.lower()
-        if 'español' in title_lower or 'castellano' in title_lower:
-            all_audio = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-            if all_audio:
-                all_audio.sort(key=lambda f: f.get('tbr', 0), reverse=True)
-                selected_audio = all_audio[0]
-                audio_source_msg = "Inferred Spanish from title, selected best available audio."
-        else:
-            audio_source_msg = "No Spanish audio found."
+    # 2. Selección de audio (interactiva)
+    audio_streams = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+    if not audio_streams: # Fallback a formatos con vídeo si no hay solo audio
+        audio_streams = [f for f in formats if f.get('acodec') != 'none']
 
-    selected_subtitle = None
-    if not selected_audio:
-        es_subs = subtitles.get('es', []) or subtitles.get('es-419', [])
-        if es_subs:
-            es_subs.sort(key=lambda s: {'srt': 0, 'vtt': 1}.get(s.get('ext'), 99))
-            selected_subtitle = es_subs[0]
+    audio_streams.sort(key=lambda f: (f.get('language', 'zz'), -f.get('abr', 0)))
+    selected_audio_id = interactive_select(audio_streams, "audio")
+
+    # 3. Selección de subtítulos (interactiva)
+    subtitles_data = video_info.get('subtitles', {})
+    auto_captions_data = video_info.get('automatic_captions', {})
+
+    subtitle_list = []
+    all_sub_langs = set(subtitles_data.keys()) | set(auto_captions_data.keys())
+
+    for lang in sorted(list(all_sub_langs)):
+        if len(lang) > 3 and '-' not in lang: continue
+
+        if lang in subtitles_data:
+            sub = subtitles_data[lang][0]
+            sub['lang_code'] = lang
+            sub['name'] = sub.get('name', lang) + " (manual)"
+            subtitle_list.append(sub)
+        elif lang in auto_captions_data:
+            sub = auto_captions_data[lang][0]
+            sub['lang_code'] = lang
+            sub['name'] = sub.get('name', lang) + " (auto)"
+            subtitle_list.append(sub)
+
+    selected_subtitle_lang = interactive_select(subtitle_list, "subtítulo")
 
     return {
-        "video": selected_video, "audio": selected_audio,
-        "subtitle": selected_subtitle, "audio_source_msg": audio_source_msg
+        "video": selected_video,
+        "audio_id": selected_audio_id,
+        "subtitle_lang": selected_subtitle_lang
     }
 
 def sanitize_filename(name: str) -> str:
@@ -215,8 +296,8 @@ def download_and_process(url: str, video_info: Dict[str, Any], selection: Dict[s
         output_path = Path.home() / "Desktop" / f"{title}.mp4"
 
     video = selection.get('video')
-    audio = selection.get('audio')
-    subtitle = selection.get('subtitle')
+    audio_id = selection.get('audio_id')
+    subtitle_lang = selection.get('subtitle_lang')
 
     if not video:
         print("Error: No suitable video stream found.", file=sys.stderr)
@@ -228,20 +309,20 @@ def download_and_process(url: str, video_info: Dict[str, Any], selection: Dict[s
     if verbose:
         command.append("--verbose")
 
-    if audio:
-        print(f"Plan: Muxing video and audio to '{output_path}'")
-        command.extend(["-f", f"{video['format_id']}+{audio['format_id']}"])
-        command.extend(["--merge-output-format", "mp4"])
-    elif subtitle:
-        print(f"Plan: Embedding Spanish subtitles in '{output_path}'")
-        command.extend(["-f", f"{video['format_id']}+bestaudio"])
-        command.extend(["--embed-subs", "--sub-lang", "es,es-419"])
-        command.extend(["--merge-output-format", "mp4"])
+    # Format selection
+    video_id = video['format_id']
+    if audio_id:
+        command.extend(["-f", f"{video_id}+{audio_id}"])
     else:
-        print(f"Warning: No Spanish audio or subtitles. Downloading best available video and audio.", file=sys.stderr)
-        command.extend(["-f", f"{video['format_id']}+bestaudio"])
-        command.extend(["--merge-output-format", "mp4"])
+        # Fallback to best audio if user skips selection, ensures audio is present
+        command.extend(["-f", f"{video_id}+bestaudio"])
 
+    # Subtitle selection
+    if subtitle_lang:
+        command.extend(["--write-sub", "--sub-lang", subtitle_lang, "--embed-subs"])
+
+    # Always merge to mp4 to prevent extensionless files
+    command.extend(["--merge-output-format", "mp4"])
     command.extend(["-o", str(output_path)])
 
     print("\nExecuting download command...")
@@ -304,16 +385,20 @@ def run_download(url: str, quality: Optional[str], output: Optional[str], verbos
     selection = select_streams(video_info, quality)
 
     print("\n--- Download Plan ---")
-    if selection["video"]:
-        print(f"Video: {selection['video']['format_note']} ({selection['video']['format_id']})")
-    if selection["audio"]:
-        print(f"Audio: {selection['audio'].get('language', 'n/a')} ({selection['audio']['format_id']}) - Source: {selection['audio_source_msg']}")
-    if selection["subtitle"]:
-        lang_code = selection['subtitle'].get('language_code', 'es')
-        print(f"Subtitle: Spanish ({lang_code}) ({selection['subtitle']['ext']})")
-    if not selection["audio"] and not selection["subtitle"]:
-        print("Audio: No Spanish audio found.")
-        print("Subtitle: No Spanish subtitles found.")
+    if selection.get("video"):
+        video_note = selection['video'].get('format_note', 'best')
+        video_id = selection['video']['format_id']
+        print(f"Video: {video_note} ({video_id})")
+
+    if selection.get("audio_id"):
+        print(f"Audio: Pista seleccionada por el usuario (ID: {selection['audio_id']})")
+    else:
+        print("Audio: No se seleccionó pista. Se usará la mejor disponible.")
+
+    if selection.get("subtitle_lang"):
+        print(f"Subtítulos: Idioma seleccionado por el usuario ('{selection['subtitle_lang']}')")
+    else:
+        print("Subtítulos: No se seleccionaron subtítulos.")
     print("---------------------\n")
 
     download_and_process(url, video_info, selection, ffmpeg_path, successful_browser, output, verbose)
