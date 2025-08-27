@@ -1,5 +1,5 @@
 # YTmp4parser-ES
-YouTube Video Downloader with Spanish Audio/Subtitles
+**YouTube Video Downloader with Spanish Audio/Subtitles.**
 
 A command-line tool to download YouTube videos with Spanish audio or subtitles.
 
